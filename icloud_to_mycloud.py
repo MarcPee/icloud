@@ -19,7 +19,7 @@ from typing import Optional, List
 import click
 from dotenv import load_dotenv
 from tqdm import tqdm
-from smbclient import open_file, register_session, register_session_guest
+from smbclient import open_file, register_session
 
 # PyiCloud imports
 try:
@@ -67,7 +67,7 @@ class MyCloudSMBClient:
                 register_session(self.host, username=self.username, password=self.password)
             else:
                 # Probeer als guest (voor Public share)
-                register_session_guest(self.host)
+                register_session(self.host, username="guest", password="")
             self._connected = True
             logger.info(f"Verbonden met SMB: smb://{self.host}/{self.share}")
         except Exception as e:
@@ -83,12 +83,16 @@ class MyCloudSMBClient:
         if not local_path.exists():
             raise FileNotFoundError(f"Lokaal bestand niet gevonden: {local_path}")
         
+        # Normaliseer remote_path (verwijder dubbele slashes en zorg voor UNIX-stijl)
+        remote_path = remote_path.replace("\\", "/").lstrip("/")
+        
         # Zorg dat de remote directory bestaat
         remote_dir = os.path.dirname(remote_path)
-        self._ensure_remote_dir(remote_dir)
+        if remote_dir:
+            self._ensure_remote_dir(remote_dir)
         
-        # Upload het bestand
-        smb_path = f"\\{self.host}\{self.share}{remote_path}"
+        # Bouw het SMB-pad: //host/share/path/to/file
+        smb_path = f"//{self.host}/{self.share}/{remote_path}"
         try:
             with open(local_path, "rb") as local_file:
                 with open_file(smb_path, mode="wb") as smb_file:
@@ -100,13 +104,15 @@ class MyCloudSMBClient:
     
     def _ensure_remote_dir(self, remote_dir: str):
         """Zorg dat de remote directory bestaat."""
+        # Normaliseer remote_dir
+        remote_dir = remote_dir.replace("\\", "/").lstrip("/")
+        
         # SMB heeft geen directe mkdir, dus we proberen een dummy-bestand te maken
-        test_path = f"\\{self.host}\{self.share}{remote_dir}/.dircheck"
+        test_path = f"//{self.host}/{self.share}/{remote_dir}/.dircheck"
         try:
             with open_file(test_path, mode="wb") as f:
                 f.write(b"")
-            # Verwijder het dummy-bestand
-            os.remove(test_path)  # Dit werkt niet voor SMB, maar we negeren de fout
+            # Verwijder het dummy-bestand (werkt niet voor SMB, maar we negeren de fout)
         except Exception:
             # Directory bestaat waarschijnlijk al
             pass
@@ -320,6 +326,9 @@ def main(
         if download_path.exists():
             all_files = list(download_path.rglob("*"))
             all_files = [f for f in all_files if f.is_file()]
+            
+            # Normaliseer target_folder (verwijder leading/trailing slashes)
+            target_folder = target_folder.strip("/")
             
             logger.info(f"Uploaden van {len(all_files)} bestanden naar My Cloud Home...")
             for local_file in tqdm(all_files, desc="Uploaden naar My Cloud"):
