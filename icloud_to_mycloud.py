@@ -168,9 +168,30 @@ class iCloudDownloader:
         
         files = []
         try:
-            # Haal de root directory op
-            root = self.api.iphone.get_files()
-            files.extend(self._process_directory(root, "/"))
+            # Nieuwe pyicloud API: gebruik self.api.iphone.file_tree of self.api.iphone.list_files
+            # Probeer eerst de nieuwe methode (pyicloud >= 1.0.0)
+            if hasattr(self.api.iphone, 'file_tree'):
+                root = self.api.iphone.file_tree()
+                files.extend(self._process_directory(root, "/"))
+            elif hasattr(self.api.iphone, 'list_files'):
+                # Alternatieve methode
+                root = self.api.iphone.list_files()
+                files.extend(self._process_directory(root, "/"))
+            elif hasattr(self.api.iphone, 'get_files'):
+                # Oude methode (voor backward compatibility)
+                root = self.api.iphone.get_files()
+                files.extend(self._process_directory(root, "/"))
+            else:
+                # Laatste redmiddel: probeer via self.api (zonder iphone)
+                if hasattr(self.api, 'file_tree'):
+                    root = self.api.file_tree()
+                    files.extend(self._process_directory(root, "/"))
+                elif hasattr(self.api, 'list_files'):
+                    root = self.api.list_files()
+                    files.extend(self._process_directory(root, "/"))
+                else:
+                    raise Exception("Geen geldige methode gevonden om iCloud Drive-bestanden op te halen. Controleer je pyicloud-versie.")
+            
             logger.info(f"Gevonden: {len(files)} bestanden/mappen in iCloud Drive")
         except Exception as e:
             logger.error(f"Fout bij ophalen van iCloud Drive: {e}")
@@ -182,21 +203,42 @@ class iCloudDownloader:
         """Recursief verwerken van een iCloud directory."""
         files = []
         
-        for item in directory.get("files", []):
-            item_path = f"{current_path}{item['name']}"
+        # Ondersteun verschillende API-responses
+        items = directory.get("files", directory.get("items", []))
+        
+        for item in items:
+            item_name = item.get("name", item.get("filename", ""))
+            item_type = item.get("type", item.get("item_type", ""))
+            item_id = item.get("id", item.get("file_id", ""))
+            item_size = item.get("size", item.get("file_size", 0))
             
-            if item.get("type") == "folder":
+            if not item_name or not item_id:
+                continue
+                
+            item_path = f"{current_path}{item_name}"
+            
+            if item_type in ["folder", "directory"]:
                 # Haal subdirectory op
-                subdir = self.api.iphone.get_files(folder_id=item["id"])
-                files.extend(self._process_directory(subdir, f"{item_path}/"))
+                try:
+                    if hasattr(self.api.iphone, 'file_tree'):
+                        subdir = self.api.iphone.file_tree(folder_id=item_id)
+                    elif hasattr(self.api.iphone, 'list_files'):
+                        subdir = self.api.iphone.list_files(folder_id=item_id)
+                    elif hasattr(self.api.iphone, 'get_files'):
+                        subdir = self.api.iphone.get_files(folder_id=item_id)
+                    else:
+                        subdir = self.api.file_tree(folder_id=item_id)
+                    files.extend(self._process_directory(subdir, f"{item_path}/"))
+                except Exception as e:
+                    logger.warning(f"Kon subdirectory {item_path} niet ophalen: {e}")
             else:
                 # Voeg bestand toe
                 files.append({
-                    "id": item["id"],
-                    "name": item["name"],
+                    "id": item_id,
+                    "name": item_name,
                     "path": item_path,
-                    "size": item.get("size", 0),
-                    "type": item.get("type", "file"),
+                    "size": item_size,
+                    "type": item_type if item_type else "file",
                 })
         
         return files
@@ -212,13 +254,27 @@ class iCloudDownloader:
         target_path.parent.mkdir(parents=True, exist_ok=True)
         
         try:
-            logger.info(f"Downloaden: {file_info['path']} ({file_info.get('size', 0) / 1024 / 1024:.2f} MB)")
+            file_id = file_info["id"]
+            file_size = file_info.get("size", 0)
+            logger.info(f"Downloaden: {file_info['path']} ({file_size / 1024 / 1024:.2f} MB)")
+            
+            # Probeer verschillende download-methodes
             with open(target_path, "wb") as f:
-                self.api.iphone.download_file(
-                    file_id=file_info["id"],
-                    output_file=f,
-                    progress_callback=lambda x, y: None,  # We gebruiken tqdm apart
-                )
+                if hasattr(self.api.iphone, 'download_file'):
+                    self.api.iphone.download_file(
+                        file_id=file_id,
+                        output_file=f,
+                        progress_callback=lambda x, y: None,
+                    )
+                elif hasattr(self.api, 'download_file'):
+                    self.api.download_file(
+                        file_id=file_id,
+                        output_file=f,
+                        progress_callback=lambda x, y: None,
+                    )
+                else:
+                    raise Exception("Geen download_file methode gevonden in pyicloud API")
+            
             logger.debug(f"Gedownload: {target_path}")
         except Exception as e:
             logger.error(f"Fout bij downloaden van {file_info['path']}: {e}")
