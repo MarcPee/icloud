@@ -168,29 +168,44 @@ class iCloudDownloader:
         
         files = []
         try:
-            # Nieuwe pyicloud API: gebruik self.api.iphone.file_tree of self.api.iphone.list_files
-            # Probeer eerst de nieuwe methode (pyicloud >= 1.0.0)
-            if hasattr(self.api.iphone, 'file_tree'):
-                root = self.api.iphone.file_tree()
-                files.extend(self._process_directory(root, "/"))
-            elif hasattr(self.api.iphone, 'list_files'):
-                # Alternatieve methode
-                root = self.api.iphone.list_files()
-                files.extend(self._process_directory(root, "/"))
-            elif hasattr(self.api.iphone, 'get_files'):
-                # Oude methode (voor backward compatibility)
-                root = self.api.iphone.get_files()
-                files.extend(self._process_directory(root, "/"))
-            else:
-                # Laatste redmiddel: probeer via self.api (zonder iphone)
-                if hasattr(self.api, 'file_tree'):
-                    root = self.api.file_tree()
+            # Nieuwe pyicloud API (versie >= 1.0.0) gebruikt list_files()
+            # Probeer eerst via self.api.iphone.list_files()
+            if hasattr(self.api.iphone, 'list_files'):
+                try:
+                    root = self.api.iphone.list_files()
                     files.extend(self._process_directory(root, "/"))
-                elif hasattr(self.api, 'list_files'):
+                except Exception as e:
+                    logger.warning(f"list_files() mislukt: {e}, probeer andere methodes...")
+                    
+            # Probeer via self.api.iphone.get_files() (oudere versie)
+            if not files and hasattr(self.api.iphone, 'get_files'):
+                try:
+                    root = self.api.iphone.get_files()
+                    files.extend(self._process_directory(root, "/"))
+                except Exception as e:
+                    logger.warning(f"get_files() mislukt: {e}")
+            
+            # Probeer via self.api.list_files() (als iphone niet werkt)
+            if not files and hasattr(self.api, 'list_files'):
+                try:
                     root = self.api.list_files()
                     files.extend(self._process_directory(root, "/"))
-                else:
-                    raise Exception("Geen geldige methode gevonden om iCloud Drive-bestanden op te halen. Controleer je pyicloud-versie.")
+                except Exception as e:
+                    logger.warning(f"api.list_files() mislukt: {e}")
+            
+            # Probeer via self.api.get_files() (oudere versie)
+            if not files and hasattr(self.api, 'get_files'):
+                try:
+                    root = self.api.get_files()
+                    files.extend(self._process_directory(root, "/"))
+                except Exception as e:
+                    logger.warning(f"api.get_files() mislukt: {e}")
+            
+            if not files:
+                raise Exception(
+                    "Geen geldige methode gevonden om iCloud Drive-bestanden op te halen. "
+                    "Controleer je pyicloud-versie (probeer 'pip install pyicloud==0.9.1' voor een oudere versie)."
+                )
             
             logger.info(f"Gevonden: {len(files)} bestanden/mappen in iCloud Drive")
         except Exception as e:
@@ -204,30 +219,42 @@ class iCloudDownloader:
         files = []
         
         # Ondersteun verschillende API-responses
-        items = directory.get("files", directory.get("items", []))
+        # Nieuwe pyicloud: list_files() retourneert een lijst met items
+        if isinstance(directory, list):
+            items = directory
+        else:
+            items = directory.get("files", directory.get("items", []))
         
         for item in items:
-            item_name = item.get("name", item.get("filename", ""))
-            item_type = item.get("type", item.get("item_type", ""))
-            item_id = item.get("id", item.get("file_id", ""))
-            item_size = item.get("size", item.get("file_size", 0))
+            # Ondersteun verschillende sleutels voor naam, type, id, en grootte
+            item_name = item.get("name") or item.get("filename") or ""
+            item_type = item.get("type") or item.get("item_type") or ""
+            item_id = item.get("id") or item.get("file_id") or ""
+            item_size = item.get("size") or item.get("file_size") or 0
             
             if not item_name or not item_id:
                 continue
                 
             item_path = f"{current_path}{item_name}"
             
-            if item_type in ["folder", "directory"]:
+            # Bepaal of het een map is
+            is_folder = item_type in ["folder", "directory", "FOLDER"]
+            
+            if is_folder:
                 # Haal subdirectory op
                 try:
-                    if hasattr(self.api.iphone, 'file_tree'):
-                        subdir = self.api.iphone.file_tree(folder_id=item_id)
-                    elif hasattr(self.api.iphone, 'list_files'):
+                    # Probeer verschillende methodes om subdirectory op te halen
+                    if hasattr(self.api.iphone, 'list_files'):
                         subdir = self.api.iphone.list_files(folder_id=item_id)
                     elif hasattr(self.api.iphone, 'get_files'):
                         subdir = self.api.iphone.get_files(folder_id=item_id)
+                    elif hasattr(self.api, 'list_files'):
+                        subdir = self.api.list_files(folder_id=item_id)
+                    elif hasattr(self.api, 'get_files'):
+                        subdir = self.api.get_files(folder_id=item_id)
                     else:
-                        subdir = self.api.file_tree(folder_id=item_id)
+                        logger.warning(f"Geen methode gevonden om subdirectory {item_path} op te halen")
+                        continue
                     files.extend(self._process_directory(subdir, f"{item_path}/"))
                 except Exception as e:
                     logger.warning(f"Kon subdirectory {item_path} niet ophalen: {e}")
